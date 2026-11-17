@@ -39,3 +39,6 @@ writeFileSync(
     game_path_max_bytes: 1000,
   }),
 );
+
+// Crimson Harbor entry: an original open-world crime game (vanilla JS + Canvas 2D).
+console.log('Crimson Harbor entry built — game, screenshots and dossier.json written to ' + out);
