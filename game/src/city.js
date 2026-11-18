@@ -1,145 +1,122 @@
-// City generation: a seeded road grid, district palettes, solid buildings,
-// props (palms, lamps, crates, benches), parking lots, docks and cranes,
-// the harbor water on the east edge, and the 20 hidden pearls.
-// Everything is plain data; render.js paints it.
-import { DISTRICTS, PEARL_COUNT, ROAD_STEP, ROAD_W, WATER_X, WORLD } from './config.js';
+// City layout: road grid, districts, buildings, props, pearls, key locations.
+// All generated deterministically from a seed so shot scenes are reproducible.
+import { WORLD, TILE, ROAD_W, DISTRICTS, PEARL_TOTAL } from './config.js';
+import { mulberry32, pick, range } from './random.js';
 
-const NOWHERE = { name: '', ground: '#4a5d3a', roof: '#5a6b7d', accent: '#8fa8c8' };
-
-function districtAt(x, y) {
-  for (const d of DISTRICTS) {
-    if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d;
-  }
-  return NOWHERE;
-}
-
-function roadCoord(v) {
-  // Roads run at multiples of ROAD_STEP, offset so the grid is centred.
-  return Math.round(v / ROAD_STEP) * ROAD_STEP;
+export function roadCenters() {
+  const xs = [], ys = [];
+  for (let v = 0; v <= WORLD; v += TILE) { xs.push(v); ys.push(v); }
+  return { xs, ys };
 }
 
 export function isOnRoad(x, y) {
-  if (x > WATER_X) return false;
-  const rx = Math.abs(x - roadCoord(x));
-  const ry = Math.abs(y - roadCoord(y));
-  return rx < ROAD_W / 2 || ry < ROAD_W / 2;
+  const m = ((v) => { const r = v % TILE; return Math.min(r, TILE - r); });
+  return m(x) < ROAD_W / 2 + 6 || m(y) < ROAD_W / 2 + 6;
 }
 
-export function createCity(random) {
-  const buildings = [];
-  const props = [];
-  const lamps = [];
-  const parked = [];
-  const pearls = [];
-  const docks = [];
-  const cranes = [];
+export function nearestRoadPoint(x, y) {
+  const snap = (v) => Math.round(v / TILE) * TILE;
+  const dx = Math.abs(snap(x) - x), dy = Math.abs(snap(y) - y);
+  return dx < dy ? { x: snap(x), y } : { x, y: snap(y) };
+}
 
-  // One building per block, with a margin so streets stay clear.
-  for (let bx = 0; bx < 8; bx += 1) {
-    for (let by = 0; by < 8; by += 1) {
-      const x0 = bx * ROAD_STEP + ROAD_W / 2 + 24;
-      const y0 = by * ROAD_STEP + ROAD_W / 2 + 24;
-      const x1 = (bx + 1) * ROAD_STEP - ROAD_W / 2 - 24;
-      const y1 = (by + 1) * ROAD_STEP - ROAD_W / 2 - 24;
-      if (x0 > WATER_X - 40) continue; // harbor water, no buildings
-      const cx = (x0 + x1) / 2;
-      const cy = (y0 + y1) / 2;
-      if (cx > WATER_X - 160) continue; // keep buildings clear of the water entirely
-      const d = districtAt(cx, cy);
-      const downtown = d.name === 'Downtown';
-      const w = downtown ? random.range(140, 220) : random.range(90, 180);
-      const h = downtown ? random.range(140, 220) : random.range(90, 170);
-      const tall = downtown && random.chance(0.5);
-      buildings.push({
-        x: cx - w / 2, y: cy - h / 2, w, h,
-        roof: d.roof, accent: d.accent, tall,
-        floors: tall ? random.int(8, 18) : random.int(1, 4),
-        seed: random(),
-      });
-      // Props sprinkled around the block, never on the road.
-      const nProps = random.int(2, 5);
-      for (let i = 0; i < nProps; i += 1) {
-        const px = random.range(x0, x1);
-        const py = random.range(y0, y1);
-        if (px > cx - w / 2 - 20 && px < cx + w / 2 + 20 && py > cy - h / 2 - 20 && py < cy + h / 2 + 20) continue;
-        const kind = d.name === 'Palm Beach' || random.chance(0.3) ? 'palm' : random.pick(['crate', 'bench', 'bush']);
-        props.push({ x: px, y: py, kind, seed: random() });
+export class City {
+  constructor(seed) {
+    this.seed = seed;
+    const rng = mulberry32(seed);
+    this.buildings = [];
+    this.palms = [];
+    this.lamps = [];
+    this.crates = [];
+    this.pearls = [];
+    this.parkingLots = [];
+    // Buildings fill each block between roads (skip the harbor water strip and beach).
+    for (let bx = 0; bx < 8; bx++) {
+      for (let by = 0; by < 8; by++) {
+        const x0 = bx * TILE + ROAD_W / 2 + 24;
+        const y0 = by * TILE + ROAD_W / 2 + 24;
+        const x1 = (bx + 1) * TILE - ROAD_W / 2 - 24;
+        const y1 = (by + 1) * TILE - ROAD_W / 2 - 24;
+        // East edge is water (harbor), south strip is beach.
+        if (x0 > 4200) continue;
+        if (y0 > 4200 && bx < 4) continue;
+        const d = DISTRICTS.find((dd) => x0 >= dd.x && x0 < dd.x + dd.w && y0 >= dd.y && y0 < dd.y + dd.h)
+          || DISTRICTS[0];
+        const n = 2 + Math.floor(rng() * 3);
+        for (let i = 0; i < n; i++) {
+          const bw = range(rng, 110, 200), bh = range(rng, 110, 200);
+          const bx0 = range(rng, x0, Math.max(x0 + 1, x1 - bw));
+          const by0 = range(rng, y0, Math.max(y0 + 1, y1 - bh));
+          const tall = d.name === 'Downtown' && rng() < 0.5;
+          this.buildings.push({
+            x: bx0, y: by0, w: bw, h: bh,
+            roof: d.roof, accent: d.accent, tall,
+            lit: Array.from({ length: 6 }, () => rng() < 0.6),
+            district: d.name,
+          });
+        }
+        // Props sprinkled on the block.
+        const propCount = 3 + Math.floor(rng() * 4);
+        for (let i = 0; i < propCount; i++) {
+          const px = range(rng, x0, x1), py = range(rng, y0, y1);
+          if (rng() < 0.45) this.palms.push({ x: px, y: py });
+          else if (rng() < 0.5) this.crates.push({ x: px, y: py, s: range(rng, 16, 26) });
+        }
       }
     }
-  }
-
-  // Street lamps along every road intersection corner.
-  for (let gx = 0; gx <= 8; gx += 1) {
-    for (let gy = 0; gy <= 8; gy += 1) {
-      const x = gx * ROAD_STEP;
-      const y = gy * ROAD_STEP;
-      if (x > WATER_X) continue;
-      lamps.push({ x: x + ROAD_W / 2 + 10, y: y + ROAD_W / 2 + 10 });
-      lamps.push({ x: x - ROAD_W / 2 - 10, y: y - ROAD_W / 2 - 10 });
+    // Street lamps along every road.
+    for (let v = TILE; v < WORLD; v += TILE) {
+      for (let u = TILE / 2; u < WORLD; u += TILE) {
+        this.lamps.push({ x: v - ROAD_W / 2 - 10, y: u });
+        this.lamps.push({ x: u, y: v - ROAD_W / 2 - 10 });
+      }
     }
-  }
-
-  // Parking lots: rows of parked cars near Downtown and Palm Beach.
-  const lots = [[2100, 1200], [1500, 3300], [3300, 1800], [2700, 3900]];
-  for (const [lx, ly] of lots) {
-    for (let i = 0; i < 5; i += 1) {
-      parked.push({ x: lx + i * 70, y: ly, angle: 0, type: random.int(0, 5), color: random.pick(['#c84a3a', '#3a6bc8', '#e8b73a', '#4a9a5a', '#d8d8d8']) });
+    // Harbor cranes + docks on the east edge.
+    this.cranes = [];
+    for (let y = 900; y < 3600; y += 700) this.cranes.push({ x: 4350, y });
+    // Parking lots with parked cars (stealable) near downtown and the harbor.
+    this.parkingLots = [
+      { x: 1500, y: 1500 }, { x: 2700, y: 900 }, { x: 3900, y: 2100 },
+      { x: 1500, y: 3300 }, { x: 3300, y: 3900 },
+    ];
+    // 20 hidden harbour pearls, mostly around the harbor and beach.
+    const spots = [];
+    for (let i = 0; i < PEARL_TOTAL; i++) {
+      if (i < 12) spots.push({ x: range(rng, 3600, 4400), y: range(rng, 700, 3500) });
+      else if (i < 16) spots.push({ x: range(rng, 2400, 3500), y: range(rng, 3900, 4400) });
+      else spots.push({ x: range(rng, 700, 3400), y: range(rng, 700, 3400) });
     }
+    this.pearls = spots.map((s) => ({ x: s.x, y: s.y, taken: false }));
+    // Key locations.
+    this.safehouse = { x: 1350, y: 3450, name: 'Safehouse' };
+    this.garage = { x: 2550, y: 2850, name: "Sinta's Garage" };
+    this.policeStation = { x: 1350, y: 1350, name: 'Police Station' };
+    this.hospital = { x: 2550, y: 1350, name: 'Harbor General' };
+    this.ammoShop = { x: 1950, y: 2250, name: 'Ammo & Armour' };
+    this.diner = { x: 3150, y: 3150, name: 'Marla\'s Diner' };
+    this.raceStart = { x: 900, y: 4500, name: 'Street Race' };
   }
 
-  // Harbor: docks, cranes and warehouses along the water.
-  for (let i = 0; i < 5; i += 1) {
-    const y = 900 + i * 700;
-    docks.push({ x: WATER_X + 40, y, w: 120, h: 220 });
-    cranes.push({ x: WATER_X - 60, y: y - 60, angle: random.range(-0.6, 0.6) });
+  districtAt(x, y) {
+    return DISTRICTS.find((d) => x >= d.x && x < d.x + d.w && y >= d.y && y < d.y + d.h) || null;
   }
-
-  // Pearls: hidden collectibles, tucked near props and docks.
-  for (let i = 0; i < PEARL_COUNT; i += 1) {
-    let x;
-    let y;
-    if (i < 6) { x = random.range(WATER_X - 300, WATER_X - 60); y = random.range(700, 4200); }
-    else if (i < 12) { x = random.range(700, 3600); y = random.range(3700, 4150); }
-    else { x = random.range(700, 4200); y = random.range(700, 4200); }
-    pearls.push({ x, y, taken: false });
-  }
-
-  function solidAt(x, y, r) {
-    if (x > WATER_X - 6) return true; // water blocks movement
-    if (x < 40 || y < 40 || x > WORLD - 40 || y > WORLD - 40) return true;
-    for (const b of buildings) {
-      if (x > b.x - r && x < b.x + b.w + r && y > b.y - r && y < b.y + b.h + r) return true;
+  isWater(x, y) { return x > 4500; }
+  // Solid test: buildings + water + world edge.
+  solidAt(x, y) {
+    if (x < 20 || y < 20 || x > WORLD - 20 || y > WORLD - 20) return true;
+    if (this.isWater(x, y)) return true;
+    for (const b of this.buildings) {
+      if (x > b.x - 4 && x < b.x + b.w + 4 && y > b.y - 4 && y < b.y + b.h + 4) return true;
     }
     return false;
   }
-
-  // Push a circle out of any building it overlaps; returns true if it hit one.
-  function resolveCircle(e, r) {
-    let hit = false;
-    if (e.x > WATER_X - r) { e.x = WATER_X - r; hit = true; }
-    e.x = Math.max(40 + r, Math.min(WORLD - 40 - r, e.x));
-    e.y = Math.max(40 + r, Math.min(WORLD - 40 - r, e.y));
-    for (const b of buildings) {
-      const cx = Math.max(b.x, Math.min(e.x, b.x + b.w));
-      const cy = Math.max(b.y, Math.min(e.y, b.y + b.h));
-      const dx = e.x - cx;
-      const dy = e.y - cy;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < r * r && d2 > 0.0001) {
-        const d = Math.sqrt(d2);
-        e.x = cx + (dx / d) * r;
-        e.y = cy + (dy / d) * r;
-        hit = true;
-      } else if (d2 <= 0.0001) {
-        e.x = b.x - r;
-        hit = true;
-      }
-    }
-    return hit;
+  // Move a circle, sliding along solids.
+  moveCircle(e, dx, dy) {
+    const r = e.radius || 12;
+    if (!this.solidAt(e.x + dx, e.y)) e.x += dx;
+    else if (!this.solidAt(e.x + dx * 0.5, e.y)) e.x += dx * 0.5;
+    if (!this.solidAt(e.x, e.y + dy)) e.y += dy;
+    else if (!this.solidAt(e.x, e.y + dy * 0.5)) e.y += dy * 0.5;
+    void r;
   }
-
-  function districtName(x, y) { return districtAt(x, y).name; }
-  function groundColor(x, y) { return districtAt(x, y).ground; }
-
-  return { buildings, props, lamps, parked, pearls, docks, cranes, solidAt, resolveCircle, districtAt, districtName, groundColor };
 }
